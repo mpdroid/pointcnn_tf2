@@ -2,7 +2,6 @@ from __future__ import absolute_import, division, print_function, unicode_litera
 
 #################################################################
 # shamelessly lifted from https://github.com/yangyanli/PointCNN
-#    I bow to thee, O gods of deep learning
 #################################################################
 
 
@@ -25,12 +24,15 @@ from matplotlib import cm
 import matplotlib.pyplot as plt
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEBUG = False
+
 WITH_GLOBAL = True
 KEEP_REMAINDER = True
 NUM_CLASS = 40
 SAMPLE_NUM = 1024
 BATCH_SIZE = 128
-NUM_EPOCHS = 1024
+NUM_EPOCHS = 50
+#NUM_EPOCHS = 5
 STEP_VAL = 500
 LEARNING_RATE_BASE = 0.01
 DECAY_STEPS = 8000
@@ -93,7 +95,6 @@ def grouped_shuffle(inputs):
 def load_pointcloud(filelist):
     points = []
     labels = []
-    count=5
 
     folder = os.path.dirname(filelist)
     for line in open(filelist):
@@ -109,11 +110,11 @@ def load_pointcloud(filelist):
 
 def load_datasets(filelist, filelist_val):
     data_train, label_train = grouped_shuffle(load_pointcloud(filelist))
-    # data_train=data_train[:640,:,:]
-    # label_train=label_train[:640]
+    #data_train=data_train[:128,:,:]
+    #label_train=label_train[:128]
     data_val, label_val = load_pointcloud(filelist_val)
-    # data_val=data_val[:640,:,:]
-    # label_val=label_val[:640]
+    #data_val=data_val[:128,:,:]
+    #label_val=label_val[:128]
     return data_train, label_train, data_val, label_val
 
 
@@ -148,6 +149,17 @@ def rotation_angle(rotation_param, method):
             return uniform(rotation_param)
 
 
+def get_no_xforms(xform_num, rotation_range=ROTATION_RANGE, scaling_range=SCALING_RANGE, order=ROTATION_ORDER):
+    xforms = np.empty(shape=(xform_num, 3, 3))
+    rotations = np.empty(shape=(xform_num, 3, 3))
+    for i in range(xform_num):
+        rotation = euler2mat(0, 0, 0, order)
+        scaling = np.diag([1, 1, 1])
+
+        xforms[i, :] = scaling * rotation 
+        rotations[i, :] = rotation
+    return xforms, rotations
+
 
 #def get_xforms(xform_num, rotation_range=(0, 0, 0, 'u'), scaling_range=(0.0, 0.0, 0.0, 'u'), order='rxyz'):
 def get_xforms(xform_num, rotation_range=ROTATION_RANGE, scaling_range=SCALING_RANGE, order=ROTATION_ORDER):
@@ -170,8 +182,9 @@ def get_xforms(xform_num, rotation_range=ROTATION_RANGE, scaling_range=SCALING_R
 
 
 def log(message):
-    time_string = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    print(time_string + ' : ', message )
+    if(DEBUG == True):
+        time_string = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+        print(time_string + ' : ', message )
 
 def Dense(output, use_bias=False, activation=tf.nn.elu, name=''):
     return tf.keras.layers.Dense(units=output, activation=activation,
@@ -209,7 +222,7 @@ def DepthWiseConv2D(depth_multiplier, kernel_size, use_bias=False, activation=tf
                 name=name
 			)
 
-def BatchNormalization(training=True, name=''):
+def BatchNormalization(name=''):
     return tf.keras.layers.BatchNormalization( momentum=0.99,
                                          beta_regularizer=tf.keras.regularizers.l2(l=0.5 * (1.0)),
                                          gamma_regularizer=tf.keras.regularizers.l2(l=0.5 * (1.0)),
@@ -315,74 +328,6 @@ def knn_indices_general(queries, points, k, sort=True, unique=True):
     return -distances, indices
 
 
-def x_convolution(pts, fts, qrs, tag, N, K, D, P, C, C_pts_fts, is_training, depth_multiplier, with_global=False):
-    log('Defining X-Convolution: ' + str(N) + ' ' +  str(K) + ' ' + str(P) )
-    _, indices_dilated = knn_indices_general(qrs, pts, K * D, True)
-    indices = indices_dilated[:, :, ::D, :]
-  
-    def reshape_for_separable_conv2d(input, N, P, K):
-        return tf.reshape(input, (N, P, K, K))
-
-    nn_pts = tf.gather_nd(pts, indices, name=tag + 'nn_pts')  # (N, P, K, 3)
-    nn_pts_center = tf.expand_dims(qrs, axis=2, name=tag + 'nn_pts_center')  # (N, P, 1, 3)
-    nn_pts_local = tf.subtract(nn_pts, nn_pts_center, name=tag + 'nn_pts_local')  # (N, P, K, 3)
-    log('Defining model_a: ' )
-
-    # Prepare features to be transformed
-    model_a = tf.keras.Sequential([
-        Dense(output = C_pts_fts, use_bias=False, name=tag + 'nn_fts_from_pts_0'),
-        BatchNormalization(training=is_training,name=tag + 'nn_fts_from_pts_0_bn'),
-        Dense(output = C_pts_fts, use_bias=False,name=tag + 'nn_fts_from_pts_bn'),
-        BatchNormalization(training=is_training,name=tag + 'nn_fts_from_pts_bn')
-    ])
-    log('Defined model_a: ' )
-    nn_fts_from_pts = model_a(nn_pts_local, training=is_training)
-    log('Prepared features to be transformed')
-    if fts is None:
-        nn_fts_input = nn_fts_from_pts
-    else:
-        nn_fts_from_prev = tf.gather_nd(fts, indices, name=tag + 'nn_fts_from_prev')
-        nn_fts_input = tf.concat([nn_fts_from_pts, nn_fts_from_prev], axis=-1, name=tag + 'nn_fts_input')
-
-    model_b = tf.keras.Sequential([
-            Conv2D(K * K, (1,K), name=tag + 'X_0'),
-            BatchNormalization(training=is_training, name=tag + 'X_0_bn'),
-            tf.keras.layers.Lambda(lambda x: reshape_for_separable_conv2d(x,N,P,K)),
-            DepthWiseConv2D(K, (1,K), name=tag + 'X_1'),
-            BatchNormalization(training=is_training, name=tag + 'X_1_bn'),
-            tf.keras.layers.Lambda(lambda x: reshape_for_separable_conv2d(x,N,P,K)),
-            DepthWiseConv2D(K, (1,K), activation=None,name=tag + 'X_2'),
-            BatchNormalization(training=is_training, name=tag + 'X_2_bn'),
-            tf.keras.layers.Lambda(lambda x: reshape_for_separable_conv2d(x,N,P,K))
-    ])
-    X_2_KK = model_b(nn_pts_local, training=is_training)
-    fts_X = tf.matmul(X_2_KK, nn_fts_input, name=tag + 'fts_X')
-    log('Completed X-transformation')
-
-    model_c = tf.keras.Sequential([
-        SeparableConv2D(C, (1,K), depth_multiplier=depth_multiplier, name=tag + 'fts_conv'),
-        BatchNormalization(training=is_training, name=tag + 'X_2_bn')
-    ])
-    fts_conv = model_c(fts_X, training=is_training)
-    fts_conv_3d = tf.squeeze(fts_conv, axis=2, name=tag + 'fts_conv_3d')
-    log('Completed Separable Convolution 2D')
-
-    if with_global:
-        model_d = tf.keras.Sequential([
-            Dense(C // 4,name=tag + 'fts_global_0'),
-            BatchNormalization(training=is_training,name=tag + 'fts_global_0_bn'),
-            Dense(C // 4,name=tag + 'fts_global'),
-            BatchNormalization(training=is_training,name=tag + 'fts_global_bn'),
-        ])
-        fts_global = model_d(qrs, training=is_training)
-
-        log('Completed concat with global')
-        return tf.concat([fts_global, fts_conv_3d], axis=-1, name=tag + 'fts_conv_3d_with_global')
-    else:
-        return fts_conv_3d
-
-
-
 # the returned indices will be used by tf.gather_nd
 def get_indices( batch_size, sample_num, point_num ):
     point_nums = tf.fill([batch_size], point_num)
@@ -426,12 +371,18 @@ class Augment(tf.keras.layers.Layer):
         super(Augment, self).__init__(input_shape=input_shape)
         self.point_num = point_num
 
+    def build(self, input_shape):
+        log('Building Augmentor')
+
 
     def call(self, inputs, training=None):
         log('Augmenting with training mode:' + str(training))
-        N = tf.shape(input=inputs)[0]
         xforms_np, rotations_np = get_xforms(BATCH_SIZE)
         xforms_np = xforms_np.astype('float32')
+
+        if(training == False):
+            xforms_np, rotations_np = get_no_xforms(BATCH_SIZE)
+            xforms_np = xforms_np.astype('float32')
         # indices = get_indices(BATCH_SIZE, sample_num_train, self.point_num)
         # points_features_sampled = tf.gather_nd(inputs, indices=indices, name='features_sampled')
         points_features_sampled = inputs
@@ -443,7 +394,6 @@ class Augment(tf.keras.layers.Layer):
         else:
             points_sampled = inputs
         points_augmented = augment(points_sampled, xforms_np, np.array([JITTER_VAL]))
-        # points_augmented = points_sampled
         return points_augmented
 
 class ProcessingLayer(tf.keras.layers.Layer):
@@ -512,6 +462,7 @@ class ProcessingLayer(tf.keras.layers.Layer):
 
 
     def build(self, input_shape):
+        log('Building Processor')
         N = input_shape[0]
         C_fts = XCONV_PARAMS[0]['C'] // 2
         self.dense_0 = Dense(C_fts, name='features_hd')
@@ -568,16 +519,19 @@ class ProcessingLayer(tf.keras.layers.Layer):
             nn_fts_from_prev = tf.gather_nd(fts, indices, name=tag + 'nn_fts_from_prev')
             nn_fts_input = tf.concat([nn_fts_from_pts, nn_fts_from_prev], axis=-1, name=tag + 'nn_fts_input')
 
+        log('- Running model_d: ' )
         X_2_KK = self.model_bs[layer_idx](nn_pts_local, training=is_training)
         fts_X = tf.matmul(X_2_KK, nn_fts_input, name=tag + 'fts_X')
         log('- Completed X-transformation')
-
+            
+        log('- Running model_c: ' )
 
         fts_conv = self.model_cs[layer_idx](fts_X, training=is_training)
         fts_conv_3d = tf.squeeze(fts_conv, axis=2, name=tag + 'fts_conv_3d')
         log('- Completed Separable Convolution 2D')
 
         if with_global:
+            log('- Running model_d: ' )
             fts_global = self.model_ds[layer_idx](qrs, training=is_training)
 
             log('Completed concat with global')
@@ -643,7 +597,7 @@ class ProcessingLayer(tf.keras.layers.Layer):
         self.fc_layers = [self.layer_features[-1]]
         for fc_idx, fc_param in enumerate(FC_PARAMS):
             fc = self.dense_es[fc_idx](self.fc_layers[-1])
-            fc_drop = self.drop_outs[fc_idx](fc, training=True)
+            fc_drop = self.drop_outs[fc_idx](fc, training=is_training)
             self.fc_layers.append(fc_drop)
         return self.fc_layers, self.layer_features
         #, self.logits, self.layer_features
@@ -666,18 +620,20 @@ class PointCNN(tf.keras.Model):
         self.augment.build(input_shape)
         self.process.build(input_shape)
         self.dense_f = Dense(NUM_CLASS, activation=None, name='logits')
+
     def call(self, points, training=None):
         log('Running model with training mode' +  str(training))
+        N = tf.shape(input=points)[0]
         x = self.augment(points)
-        self.fc_layers, self.layer_fts = self.process(x, self.layer_fts, training=training)
+        #self.fc_layers, self.layer_fts = self.process(x, self.layer_fts, training=training)
+        self.fc_layers, _ = self.process(x, self.layer_fts, training=training)
+        self.layers_fts = None
         fc_layer = self.fc_layers[-1]
         fc_mean = tf.reduce_mean(fc_layer, axis=1, keepdims=True, name='fc_mean')
         self.fc_layers[-1] = tf.cond(tf.cast(training, tf.bool), lambda: fc_layer, lambda: fc_mean)
         x = self.dense_f(self.fc_layers[-1])
         #x = self.dense_f(fc_mean)
-        # tf.print('output shape:',tf.shape(x))
-        # tf.print('logits:',x[0][0])
-        # tf.print('logits:',tf.reduce_sum(x[0][0])
+        #return tf.keras.activations.softmax(x)
         return x
 
     # def __call__(self, points):
@@ -698,26 +654,22 @@ def main():
     num_test = data_val.shape[0]
 
     log('{:d}/{:d} training/validation samples.'.format(num_train, num_test))
-    train_batch_num_per_epoch = math.ceil(num_train / BATCH_SIZE)
+    train_batch_num_per_epoch = num_train // BATCH_SIZE
     train_batch_num = train_batch_num_per_epoch * NUM_EPOCHS
     log('{:d} training batches'.format(train_batch_num))
 
-    test_batch_num_per_epoch = math.ceil(num_test / BATCH_SIZE)
+    test_batch_num_per_epoch = num_test // BATCH_SIZE
     test_batch_num = test_batch_num_per_epoch * NUM_EPOCHS
     log('{:d} testing batches'.format(test_batch_num))
 
     train_dataset = tf.data.Dataset.from_tensor_slices((data_train, label_train))
-    train_ds = train_dataset.shuffle(BATCH_SIZE * 4).batch(BATCH_SIZE, drop_remainder=True)
-    #.batch(BATCH_SIZE)
-    test_ds = tf.data.Dataset.from_tensor_slices((data_val, label_val)).batch(BATCH_SIZE, drop_remainder=True)
-    #.batch(BATCH_SIZE)
+    buffer_size = num_train * NUM_EPOCHS 
+    train_ds = train_dataset.repeat(NUM_EPOCHS).shuffle(buffer_size).repeat().batch(BATCH_SIZE, drop_remainder=True)
+    #train_ds = train_dataset.batch(BATCH_SIZE, drop_remainder=True)
+    val_buffer_size = num_test * NUM_EPOCHS
+    test_dataset = tf.data.Dataset.from_tensor_slices((data_val, label_val))
+    test_ds = test_dataset.repeat(NUM_EPOCHS).batch(BATCH_SIZE, drop_remainder=True)
 
-    refmodel = tf.keras.models.Sequential()
-    refmodel.add(tf.keras.layers.Conv2D(2048, (6, 6), activation='relu', input_shape=(None, 2048, 6)))
-    refmodel.add(tf.keras.layers.MaxPooling2D((5, 5)))
-    refmodel.add(tf.keras.layers.Conv2D(4096, (6, 6), activation='relu'))
-    refmodel.add(tf.keras.layers.MaxPooling2D((2, 2)))
-    refmodel.add(tf.keras.layers.Conv2D(4096, (6, 6), activation='relu'))
 
     model = PointCNN(point_num)
 
@@ -745,7 +697,8 @@ def main():
                 # loss='sparse_categorical_crossentropy',
                 metrics=['accuracy','categorical_accuracy'])
     log('Compiled model')
-    model.build([128,2048,3])
+    model.build((128,2048,3))
+    log('Built model')
     history = model.fit_generator(
         train_ds,
         steps_per_epoch=train_batch_num_per_epoch,

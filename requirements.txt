@@ -3,6 +3,7 @@ plyfile
 python-mnist
 requests
 scipy
+h5py
 svgpathtools
 tensorflow==2.0.0
 tensorflow-addons

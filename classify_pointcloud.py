@@ -673,7 +673,8 @@ class PointCNN(tf.keras.Model):
         fc_layer = self.fc_layers[-1]
         fc_mean = tf.reduce_mean(fc_layer, axis=1, keepdims=True, name='fc_mean')
         self.fc_layers[-1] = tf.cond(tf.cast(training, tf.bool), lambda: fc_layer, lambda: fc_mean)
-        x = self.dense_f(fc_mean)
+        x = self.dense_f(self.fc_layers[-1])
+        #x = self.dense_f(fc_mean)
         # tf.print('output shape:',tf.shape(x))
         # tf.print('logits:',x[0][0])
         # tf.print('logits:',tf.reduce_sum(x[0][0])

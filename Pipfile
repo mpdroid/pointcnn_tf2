@@ -16,6 +16,7 @@ tensorflow = "==2.0.0"
 tensorflow-addons = "*"
 tqdm = "*"
 transforms3d = "*"
+h5py = "*"
 
 [requires]
 python_version = "3.7"

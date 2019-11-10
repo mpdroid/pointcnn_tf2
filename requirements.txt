@@ -1,0 +1,10 @@
+matplotlib
+plyfile
+python-mnist
+requests
+scipy
+svgpathtools
+tensorflow==2.0.0
+tensorflow-addons
+tqdm
+transforms3d

@@ -31,8 +31,8 @@ KEEP_REMAINDER = True
 NUM_CLASS = 40
 SAMPLE_NUM = 1024
 BATCH_SIZE = 128
+#NUM_EPOCHS = 1024
 NUM_EPOCHS = 50
-#NUM_EPOCHS = 5
 STEP_VAL = 500
 LEARNING_RATE_BASE = 0.01
 DECAY_STEPS = 8000
@@ -80,6 +80,8 @@ SORTING_METHOD = None
 POOL_SETTING_TRAIN = None
 POOL_SETTING_VAL = None
 
+def get_next(batchDataset):
+    return next(iter(batchDataset))
 
 def grouped_shuffle(inputs):
     for idx in range(len(inputs) - 1):
@@ -110,11 +112,11 @@ def load_pointcloud(filelist):
 
 def load_datasets(filelist, filelist_val):
     data_train, label_train = grouped_shuffle(load_pointcloud(filelist))
-    #data_train=data_train[:128,:,:]
-    #label_train=label_train[:128]
+    # data_train=data_train[:256,:,:]
+    # label_train=label_train[:256]
     data_val, label_val = load_pointcloud(filelist_val)
-    #data_val=data_val[:128,:,:]
-    #label_val=label_val[:128]
+    # data_val=data_val[:256,:,:]
+    # label_val=label_val[:256]
     return data_train, label_train, data_val, label_val
 
 
@@ -222,11 +224,6 @@ def DepthWiseConv2D(depth_multiplier, kernel_size, use_bias=False, activation=tf
                 name=name
 			)
 
-def BatchNormalization(name=''):
-    return tf.keras.layers.BatchNormalization( momentum=0.99,
-                                         beta_regularizer=tf.keras.regularizers.l2(l=0.5 * (1.0)),
-                                         gamma_regularizer=tf.keras.regularizers.l2(l=0.5 * (1.0)),
-                                         name=name)
 
 def SeparableConv2D(output,  kernel_size, use_bias=False, depth_multiplier=1,
                       activation=tf.nn.elu, name=''):
@@ -366,14 +363,11 @@ def augment(points, xforms, range=None):
 
 
 
+
 class Augment(tf.keras.layers.Layer):
     def __init__(self, point_num, input_shape=None):
         super(Augment, self).__init__(input_shape=input_shape)
         self.point_num = point_num
-
-    def build(self, input_shape):
-        log('Building Augmentor')
-
 
     def call(self, inputs, training=None):
         log('Augmenting with training mode:' + str(training))
@@ -396,74 +390,127 @@ class Augment(tf.keras.layers.Layer):
         points_augmented = augment(points_sampled, xforms_np, np.array([JITTER_VAL]))
         return points_augmented
 
-class ProcessingLayer(tf.keras.layers.Layer):
+def BatchNormalization(name=''):
+    return tf.keras.layers.BatchNormalization( momentum=0.99,
+                                        beta_regularizer=tf.keras.regularizers.l2(l=0.5 * (1.0)),
+                                        gamma_regularizer=tf.keras.regularizers.l2(l=0.5 * (1.0)),
+                                        name=name)
+
+class ProcessingBlock(tf.keras.Model):
 
     dense_0 = None
-    model_a1s = [None] * len(XCONV_PARAMS)
-    model_a2s = [None] * len(XCONV_PARAMS)
-    model_a3s = [None] * len(XCONV_PARAMS)
-    model_bs = [None] * len(XCONV_PARAMS)
-    model_cs = [None] * len(XCONV_PARAMS)
-    model_ds = [None] * len(XCONV_PARAMS)
-    dense_es = [None] * len(FC_PARAMS)
-    drop_outs = [None] * len(FC_PARAMS)
-    dense_f = None
 
-    def __init__(self, features):
-        super(ProcessingLayer, self).__init__()
-        self.features = features
-    
-    def define_x_convolution(self, tag, N, K, D, P, C, C_prev, depth_multiplier, with_global):
-        def reshape_for_separable_conv2d(input, N, P, K):
-            return tf.reshape(input, (N, P, K, K))
+    model_a1_0 = None
+    model_a1_1 = None
+    model_a1_2 = None
+    model_a1_3 = None
+
+    model_a2_0 = None
+    model_a2_1 = None
+    model_a2_2 = None
+    model_a2_3 = None
+
+    model_a3_0 = None
+    model_a3_1 = None
+    model_a3_2 = None
+    model_a3_3 = None
+
+    model_b_0 = None
+    model_b_1 = None
+    model_b_2 = None
+    model_b_3 = None
+
+    model_c_0 = None
+    model_c_1 = None
+    model_c_2 = None
+    model_c_3 = None
+
+    model_d_0 = None
+    model_d_1 = None
+    model_d_2 = None
+    model_d_3 = None
+
+    dense_e_0 = None
+    dense_e_1 = None
+    drop_out_0 = None
+    drop_out_1 = None
+
+
+            
+    def define_x_convolution(self, layer_idx, tag, N, K, D, P, C, C_prev, depth_multiplier, with_global):
+        def reshape_for_separable_conv2d(input, nN, pP, kK):
+            return tf.reshape(input, (nN, pP, kK, kK))
         model_a1 = tf.keras.Sequential([
-            Dense(output = C // 2, use_bias=False, name=tag + 'nn_fts_from_pts_0'),
-            BatchNormalization(name=tag + 'nn_fts_from_pts_0_bn'),
-            Dense(output = C // 2, use_bias=False,name=tag + 'nn_fts_from_pts_bn'),
-            BatchNormalization(name=tag + 'nn_fts_from_pts_bn')
+            tf.keras.Input(shape=(2048, 8, 3,)),
+            Dense(output = C // 2, use_bias=False, name=tag + 'nn_fts_from_pts_0_a1_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'nn_fts_from_pts_0_bn_a1_'+str(layer_idx)),
+            Dense(output = C // 2, use_bias=False,name=tag + 'nn_fts_from_pts_a1_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'nn_fts_from_pts_a1_bn_'+str(layer_idx))
         ])
 
         model_a2 = tf.keras.Sequential([
-            Dense(output = C // 4, use_bias=False, name=tag + 'nn_fts_from_pts_0'),
-            BatchNormalization(name=tag + 'nn_fts_from_pts_0_bn'),
-            Dense(output = C // 4, use_bias=False,name=tag + 'nn_fts_from_pts_bn'),
-            BatchNormalization(name=tag + 'nn_fts_from_pts_bn')
+            tf.keras.Input(shape=(384, 12, 3,)),
+            Dense(output = C // 4, use_bias=False, name=tag + 'nn_fts_from_pts_0_a2_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'nn_fts_from_pts_0_bn_a2_'+str(layer_idx)),
+            Dense(output = C // 4, use_bias=False,name=tag + 'nn_fts_from_pts_a2_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'nn_fts_from_pts_bn_a2_'+str(layer_idx))
         ])
 
         model_a3 = tf.keras.Sequential([
-            Dense(output = C_prev // 4, use_bias=False, name=tag + 'nn_fts_from_pts_0'),
-            BatchNormalization(name=tag + 'nn_fts_from_pts_0_bn'),
-            Dense(output = C_prev // 4, use_bias=False,name=tag + 'nn_fts_from_pts_bn'),
-            BatchNormalization(name=tag + 'nn_fts_from_pts_bn')
+            tf.keras.Input(shape=(128, 16, 3,)),
+            Dense(output = C_prev // 4, use_bias=False, name=tag + 'nn_fts_from_pts_0_a3_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'nn_fts_from_pts_0_bn_a3_'+str(layer_idx)),
+            Dense(output = C_prev // 4, use_bias=False,name=tag + 'nn_fts_from_pts_a3_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'nn_fts_from_pts_bn_a3_'+str(layer_idx))
         ])
+
+        if(layer_idx == 0):
+            pPP = 2048
+            kKK = 8
+            PSI = 24
+        if(layer_idx == 1):
+            pPP = 383
+            kKK = 12
+            PSI = 60
+        if(layer_idx == 2):
+            pPP = 128
+            kKK = 16
+            PSI = 120
+        if(layer_idx == 3):
+            pPP = 128
+            kKK = 6
+            PSI = 240
 
         model_b = tf.keras.Sequential([
-                Conv2D(K * K, (1,K), name=tag + 'X_0'),
-                BatchNormalization(name=tag + 'X_0_bn'),
+                # tf.keras.Input(shape=(pPP, kKK, 3,)),
+                Conv2D(K * K, (1,K), name=tag + 'X_0_'+str(layer_idx)),
+                BatchNormalization(name=tag + 'X_0_bn_'+str(layer_idx)),
                 tf.keras.layers.Lambda(lambda x: reshape_for_separable_conv2d(x,N,P,K)),
-                DepthWiseConv2D(K, (1,K), name=tag + 'X_1'),
-                BatchNormalization(name=tag + 'X_1_bn'),
+                DepthWiseConv2D(K, (1,K), name=tag + 'X_1_'+str(layer_idx)),
+                BatchNormalization(name=tag + 'X_1_bn_'+str(layer_idx)),
                 tf.keras.layers.Lambda(lambda x: reshape_for_separable_conv2d(x,N,P,K)),
-                DepthWiseConv2D(K, (1,K), activation=None,name=tag + 'X_2'),
-                BatchNormalization( name=tag + 'X_2_bn'),
+                DepthWiseConv2D(K, (1,K), activation=None,name=tag + 'X_2_'+str(layer_idx)),
+                BatchNormalization( name=tag + 'X_2_bn_'+str(layer_idx)),
                 tf.keras.layers.Lambda(lambda x: reshape_for_separable_conv2d(x,N,P,K))
         ])
+
         model_c = tf.keras.Sequential([
-            SeparableConv2D(C, (1,K), depth_multiplier=depth_multiplier, name=tag + 'fts_conv'),
-            BatchNormalization( name=tag + 'X_2_bn')
+            # tf.keras.Input(shape=(pPP, kKK, PSI,)),
+            SeparableConv2D(C, (1,K), depth_multiplier=depth_multiplier, name=tag + 'fts_conv_'+str(layer_idx)),
+            BatchNormalization( name=tag + 'fts_conv_bn_'+str(layer_idx))
         ])
         model_d = tf.keras.Sequential([
-            Dense(C // 4,name=tag + 'fts_global_0'),
-            BatchNormalization(name=tag + 'fts_global_0_bn'),
-            Dense(C // 4,name=tag + 'fts_global'),
-            BatchNormalization(name=tag + 'fts_global_bn'),
+            tf.keras.Input(shape=(pPP, 3,)),
+            Dense(C // 4,name=tag + 'fts_global_0_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'fts_global_0_bn_'+str(layer_idx)),
+            Dense(C // 4,name=tag + 'fts_global_'+str(layer_idx)),
+            BatchNormalization(name=tag + 'fts_global_bn_'+str(layer_idx)),
         ])
-        return model_a1, model_a2, model_a3, model_b, model_c, model_d               
-
-
-    def build(self, input_shape):
-        log('Building Processor')
-        N = input_shape[0]
+        return model_a1, model_a2, model_a3, model_b, model_c, model_d         
+        
+    def __init__(self,input_shape=None, name='processor'):
+        super(ProcessingBlock, self).__init__(name=name)
+        N=BATCH_SIZE
         C_fts = XCONV_PARAMS[0]['C'] // 2
         self.dense_0 = Dense(C_fts, name='features_hd')
         for layer_idx, layer_param in enumerate(XCONV_PARAMS):
@@ -479,39 +526,124 @@ class ProcessingLayer(tf.keras.layers.Layer):
             else:   
                 depth_multiplier = math.ceil(C / C_prev)
             with_global = (WITH_GLOBAL and layer_idx == len(XCONV_PARAMS) - 1)
-            model_a1, model_a2, model_a3, model_b, model_c, model_d = self.define_x_convolution(tag, N, K, D, P, C,  C_prev,
+            model_a1, model_a2, model_a3, model_b, model_c, model_d = self.define_x_convolution(layer_idx, tag,  N, K, D, P, C,  C_prev,
                             depth_multiplier, with_global)
-            self.model_a1s[layer_idx] = model_a1
-            self.model_a2s[layer_idx] = model_a2
-            self.model_a3s[layer_idx] = model_a3
-            self.model_bs[layer_idx] = model_b
-            self.model_cs[layer_idx] = model_c
-            self.model_ds[layer_idx] = model_d
+            if (layer_idx == 0):
+                self.imodel_a1_0 = model_a1
+                self.imodel_a2_0 = model_a2
+                self.imodel_a3_0 = model_a3
+                self.imodel_b_0 = model_b
+                self.imodel_c_0 = model_c
+                self.imodel_d_0 = model_d
+            if (layer_idx == 1):
+                self.imodel_a1_1 = model_a1
+                self.imodel_a2_1 = model_a2
+                self.imodel_a3_1 = model_a3
+                self.imodel_b_1 = model_b
+                self.imodel_c_1 = model_c
+                self.imodel_d_1 = model_d
+            if (layer_idx == 2):
+                self.imodel_a1_2 = model_a1
+                self.imodel_a2_2 = model_a2
+                self.imodel_a3_2 = model_a3
+                self.imodel_b_2 = model_b
+                self.imodel_c_2 = model_c
+                self.imodel_d_2 = model_d
+            if (layer_idx == 3):
+                self.imodel_a1_3 = model_a1
+                self.imodel_a2_3 = model_a2
+                self.imodel_a3_3 = model_a3
+                self.imodel_b_3 = model_b
+                self.imodel_c_3 = model_c
+                self.imodel_d_3 = model_d
+        self.model_a1_0 = self.imodel_a1_0
+        self.model_a1_1 = self.imodel_a1_1
+        self.model_a1_2 = self.imodel_a1_2
+        self.model_a1_3 = self.imodel_a1_3
+
+        self.model_a2_0 = self.imodel_a2_0
+        self.model_a2_1 = self.imodel_a2_1
+        self.model_a2_2 = self.imodel_a2_2
+        self.model_a2_3 = self.imodel_a2_3
+
+        self.model_a3_0 = self.imodel_a3_0
+        self.model_a3_1 = self.imodel_a3_1
+        self.model_a3_2 = self.imodel_a3_2
+        self.model_a3_3 = self.imodel_a3_3
+
+        self.model_b_0 = self.imodel_b_0
+        self.model_b_1 = self.imodel_b_1
+        self.model_b_2 = self.imodel_b_2
+        self.model_b_3 = self.imodel_b_3
+
+        self.model_c_0 = self.imodel_c_0
+        self.model_c_1 = self.imodel_c_1
+        self.model_c_2 = self.imodel_c_2
+        self.model_c_3 = self.imodel_c_3
+
+        self.model_d_0 = self.imodel_d_0
+        self.model_d_1 = self.imodel_d_1
+        self.model_d_2 = self.imodel_d_2
+        self.model_d_3 = self.imodel_d_3
+
+
         for fc_idx, fc_param in enumerate(FC_PARAMS):
             C = fc_param['C']
             dropout_rate = fc_param['dropout_rate']
             dense_e = Dense(C, name='fc{:d}'.format(fc_idx))
-            self.dense_es[fc_idx] = dense_e
             drop_out = tf.keras.layers.Dropout(dropout_rate)
-            self.drop_outs[fc_idx] = drop_out
+            if(fc_idx == 0):
+                self.dense_e_0 = dense_e
+                self.drop_out_0 = drop_out
+            if(fc_idx == 1):
+                self.dense_e_1 = dense_e
+                self.drop_out_1 = drop_out
 
-        self.dense_f = Dense(NUM_CLASS, activation=None, name='logits')
-            
 
     def call_x_convolution(self, layer_idx, pts, fts, qrs, tag, N, K, D, P, C, C_pts_fts, atype, is_training, depth_multiplier, with_global=False):
         log('- Running X-Convolution Layer ' + str(layer_idx) + ' : ' + str(N) + ' ' +  str(K) + ' ' + str(P) )
         _, indices_dilated = knn_indices_general(qrs, pts, K * D, True)
+
+        if (layer_idx == 0):
+            model_a1 = self.model_a1_0
+            model_a2 = self.model_a2_0
+            model_a3 = self.model_a3_0
+            model_b = self.model_b_0
+            model_c = self.model_c_0
+            model_d = self.model_d_0
+        if (layer_idx == 1):
+            model_a1 = self.model_a1_1
+            model_a2 = self.model_a2_1
+            model_a3 = self.model_a3_1
+            model_b = self.model_b_1
+            model_c = self.model_c_1
+            model_d = self.model_d_1
+        if (layer_idx == 2):
+            model_a1 = self.model_a1_2
+            model_a2 = self.model_a2_2
+            model_a3 = self.model_a3_2
+            model_b = self.model_b_2
+            model_c = self.model_c_2
+            model_d = self.model_d_2
+        if (layer_idx == 3):
+            model_a1 = self.model_a1_3
+            model_a2 = self.model_a2_3
+            model_a3 = self.model_a3_3
+            model_b = self.model_b_3
+            model_c = self.model_c_3
+            model_d = self.model_d_3
+
         indices = indices_dilated[:, :, ::D, :]
         nn_pts = tf.gather_nd(pts, indices, name=tag + 'nn_pts')  # (N, P, K, 3)
         nn_pts_center = tf.expand_dims(qrs, axis=2, name=tag + 'nn_pts_center')  # (N, P, 1, 3)
         nn_pts_local = tf.subtract(nn_pts, nn_pts_center, name=tag + 'nn_pts_local')  # (N, P, K, 3)
         log('- Running model_a: ' )
         if (atype == 1):
-            nn_fts_from_pts = self.model_a1s[layer_idx](nn_pts_local, training=is_training)
+            nn_fts_from_pts = model_a1(nn_pts_local, training=is_training)
         elif (atype == 2):
-            nn_fts_from_pts = self.model_a2s[layer_idx](nn_pts_local, training=is_training)
+            nn_fts_from_pts = model_a2(nn_pts_local, training=is_training)
         else:
-            nn_fts_from_pts = self.model_a3s[layer_idx](nn_pts_local, training=is_training)
+            nn_fts_from_pts = model_a3(nn_pts_local, training=is_training)
         log('- Prepared features to be transformed')
         if fts is None:
             nn_fts_input = nn_fts_from_pts
@@ -519,30 +651,32 @@ class ProcessingLayer(tf.keras.layers.Layer):
             nn_fts_from_prev = tf.gather_nd(fts, indices, name=tag + 'nn_fts_from_prev')
             nn_fts_input = tf.concat([nn_fts_from_pts, nn_fts_from_prev], axis=-1, name=tag + 'nn_fts_input')
 
-        log('- Running model_d: ' )
-        X_2_KK = self.model_bs[layer_idx](nn_pts_local, training=is_training)
+        log('- Running model_b: ' )
+        X_2_KK = model_b(nn_pts_local, training=is_training)
         fts_X = tf.matmul(X_2_KK, nn_fts_input, name=tag + 'fts_X')
         log('- Completed X-transformation')
             
         log('- Running model_c: ' )
 
-        fts_conv = self.model_cs[layer_idx](fts_X, training=is_training)
+        fts_conv = model_c(fts_X, training=is_training)
         fts_conv_3d = tf.squeeze(fts_conv, axis=2, name=tag + 'fts_conv_3d')
         log('- Completed Separable Convolution 2D')
 
         if with_global:
             log('- Running model_d: ' )
-            fts_global = self.model_ds[layer_idx](qrs, training=is_training)
+            fts_global = model_d(qrs, training=is_training)
 
-            log('Completed concat with global')
-            return tf.concat([fts_global, fts_conv_3d], axis=-1, name=tag + 'fts_conv_3d_with_global')
+            log('- Completed concat with global')
+            fts_conv_3d = tf.concat([fts_global, fts_conv_3d], axis=-1, name=tag + 'fts_conv_3d_with_global')
+
+            return fts_conv_3d
         else:
             return fts_conv_3d
 
-    def call(self, points, features, training=None):
+    def call(self, points, training=None):
         log('Processing with training mode '+ str(training))
         is_training = training
-        features = self.features
+        features =  None
         N = tf.shape(input=points)[0]
         self.layer_points = [points]
         if features is None:
@@ -596,45 +730,65 @@ class ProcessingLayer(tf.keras.layers.Layer):
 
         self.fc_layers = [self.layer_features[-1]]
         for fc_idx, fc_param in enumerate(FC_PARAMS):
-            fc = self.dense_es[fc_idx](self.fc_layers[-1])
-            fc_drop = self.drop_outs[fc_idx](fc, training=is_training)
+            if(fc_idx == 0):
+                dense_e = self.dense_e_0
+                drop_out = self.drop_out_0
+            if(fc_idx == 1):
+                dense_e = self.dense_e_1
+                drop_out = self.drop_out_1
+            fc = dense_e(self.fc_layers[-1])
+            fc_drop = drop_out(fc, training=is_training)
             self.fc_layers.append(fc_drop)
-        return self.fc_layers, self.layer_features
+        return self.fc_layers[-1]
         #, self.logits, self.layer_features
 
+class Summarizer(tf.keras.layers.Layer):
+    dense_f = None
+
+    def __init__(self, input_shape=None):
+        super(Summarizer, self).__init__()
+        dense_f = None
+        self.dense_f = Dense(NUM_CLASS, activation=None, name='logits')
 
 
-class PointCNN(tf.keras.Model):
+    def call(self, fc_layer, training=None):
+        log('Summarizing in training mode:' + str(training))
+        fc_mean = tf.reduce_mean(fc_layer, axis=1, keepdims=True, name='fc_mean')
+        fc_layer = tf.cond(tf.cast(training, tf.bool), lambda: fc_layer, lambda: fc_mean)
+        output = self.dense_f(fc_mean)
+        # output = tf.nn.softmax(output, name='probs')
+        return output
+
+
+class PointCNN(tf.keras.Sequential):
 
     layer_fts = None
     fc_layers = None
-    dense_f = None
 
-    def __init__(self, point_num):
+    def __init__(self, point_num, input_shape):
         super(PointCNN, self).__init__()
         self.point_num = point_num
-        self.augment = Augment( point_num, input_shape=(2048, 6))
-        self.process = ProcessingLayer(self.layer_fts)
+        # self.augment = Augment( point_num, input_shape=[2048,6])
+        # self.process = ProcessingBlock(input_shape=input_shape)
+        # self.summarize = Summarizer()
+        self.add(Augment( point_num, input_shape=[2048,6]))
+        self.add(ProcessingBlock(input_shape=[2048, 3]))
+        self.add(Summarizer())
 
-    def build(self, input_shape):
-        self.augment.build(input_shape)
-        self.process.build(input_shape)
-        self.dense_f = Dense(NUM_CLASS, activation=None, name='logits')
+    # def build(self, input_shape):
+        # super(PointCNN, self).build(input_shape)
+        # self.augment.build(input_shape)
+        # self.process.build(input_shape)
+        # self.summarize.build()
 
     def call(self, points, training=None):
         log('Running model with training mode' +  str(training))
-        N = tf.shape(input=points)[0]
-        x = self.augment(points)
-        #self.fc_layers, self.layer_fts = self.process(x, self.layer_fts, training=training)
-        self.fc_layers, _ = self.process(x, self.layer_fts, training=training)
-        self.layers_fts = None
-        fc_layer = self.fc_layers[-1]
-        fc_mean = tf.reduce_mean(fc_layer, axis=1, keepdims=True, name='fc_mean')
-        self.fc_layers[-1] = tf.cond(tf.cast(training, tf.bool), lambda: fc_layer, lambda: fc_mean)
-        x = self.dense_f(self.fc_layers[-1])
-        #x = self.dense_f(fc_mean)
-        #return tf.keras.activations.softmax(x)
+        x =  super(PointCNN, self).call(points, training=training)
         return x
+
+        # x = self.augment(points)
+        # self.fc_layers, _ = self.process(x, training=training)
+        # return x
 
     # def __call__(self, points):
     #     return self.call(points,training=training)
@@ -664,30 +818,51 @@ def main():
 
     train_dataset = tf.data.Dataset.from_tensor_slices((data_train, label_train))
     buffer_size = num_train * NUM_EPOCHS 
-    train_ds = train_dataset.repeat(NUM_EPOCHS).shuffle(buffer_size).repeat().batch(BATCH_SIZE, drop_remainder=True)
-    #train_ds = train_dataset.batch(BATCH_SIZE, drop_remainder=True)
+    train_ds = train_dataset.repeat(NUM_EPOCHS).shuffle(BATCH_SIZE * 4).batch(BATCH_SIZE, drop_remainder=True)
     val_buffer_size = num_test * NUM_EPOCHS
     test_dataset = tf.data.Dataset.from_tensor_slices((data_val, label_val))
     test_ds = test_dataset.repeat(NUM_EPOCHS).batch(BATCH_SIZE, drop_remainder=True)
 
 
-    model = PointCNN(point_num)
-
+    model = PointCNN(point_num,(2048,6))
+    model.summary()
+    # model.get_layer('processing_block').summary()
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
         LEARNING_RATE_BASE,
         decay_steps=DECAY_STEPS,
         decay_rate=DECAY_RATE,
         staircase=True)
 
-    class CustomLoss(tf.keras.losses.CategoricalCrossentropy): 
+    class CustomLoss(tf.keras.losses.Loss): 
         def __init__(self):
-            super(CustomLoss, self).__init__(from_logits=False)
+            super(CustomLoss, self).__init__()
 
-    # def custom_loss(y_true, y_pred):
-    #     reg_loss = WEIGHT_DECAY * tf.compat.v1.losses.get_regularization_loss()
-    #     return tf.losses.CategoricalCrossentropy(labels=labels_tile, logits=model.logits) 
+        def call(self, y_true, y_pred):
+            actuals = tf.cast(tf.reshape(y_true,[-1]),tf.int64)
+            onehot = tf.one_hot(actuals, NUM_CLASS, axis=-1)
+            probs = tf.nn.softmax(y_pred, name='probs')
+            probs = tf.reshape(probs, [BATCH_SIZE, NUM_CLASS])
+            loss = tf.keras.losses.CategoricalCrossentropy(from_logits=False).call(onehot, probs)
+            return loss
+
+    class CustomAccuracy(tf.keras.metrics.Accuracy): 
+        def __init__(self, name='pccnAccuracy', **kwargs):
+            super(CustomAccuracy, self).__init__(name=name, **kwargs)
+            self.accuracy = self.add_weight(name='acc', initializer='zeros',dtype='float32')
+
+        def update_state(self, y_true, y_pred, sample_weight=None):
+            actuals = tf.cast(tf.reshape(y_true,[-1]),tf.int64)
+            probs = tf.nn.softmax(y_pred, name='probs')
+            predictions = tf.argmax(probs, axis=-1, name='predictions')
+            super(CustomAccuracy, self).update_state(actuals,predictions)
 
 
+        def result(self):
+            return super(CustomAccuracy, self).result()
+
+        def reset_states(self):
+            super(CustomAccuracy, self).reset_states()            
+            
     # tf.maximum(lr_schedule, LEARNING_RATE_MIN)
     adam = tf.keras.optimizers.Adam(
                     epsilon=EPSILON,
@@ -695,10 +870,12 @@ def main():
     model.compile(optimizer='adam',
                 loss=CustomLoss(),
                 # loss='sparse_categorical_crossentropy',
-                metrics=['accuracy','categorical_accuracy'])
+                metrics=[CustomAccuracy()])
     log('Compiled model')
     model.build((128,2048,3))
     log('Built model')
+
+    ########################################
     history = model.fit_generator(
         train_ds,
         steps_per_epoch=train_batch_num_per_epoch,
@@ -709,13 +886,14 @@ def main():
     )
     log('Completed running  model')
 
-    acc = history.history['accuracy']
-    val_acc = history.history['val_accuracy']
+    acc = history.history['pccnAccuracy']
+    val_acc = history.history['val_pccnAccuracy']
 
     loss = history.history['loss']
     val_loss = history.history['val_loss']
 
     log('Accuracy ' + ' ' + str(acc) + ' ' + str(val_acc))
+    sys.exit()
     epochs_range = range(NUM_EPOCHS)
 
     plt.figure(figsize=(8, 8))
@@ -731,7 +909,70 @@ def main():
     # plt.legend(loc='upper right')
     # plt.title('Training and Validation Loss')
     # plt.show()
+    step = 0
+    loss = 0
+    t_1_acc = 0
+    t_1_per_class_acc = 0
 
+    test_step = 0
+    test_loss = 0
+    test_t_1_acc = 0
+    test_t_1_per_class_acc = 0
+
+    def reset_metrics():
+        loss = 0
+        t_1_acc = 0
+        t_1_per_class_acc = 0
+        log('resetting metrics')
+
+    def reset_test_metrics():
+        test_loss = 0
+        test_t_1_acc = 0
+        test_t_1_per_class_acc = 0
+        log('resetting test_metrics')
+
+    def train():
+        log('training')
+    
+    def test():
+        log('testing')
+
+    def update_metrics():
+        log('updating metrics')
+    
+    def update_test_metrics():
+        log('updating test metrics')
+
+    def aggregate_metrics():
+        log('aggregating metrics')
+
+    def aggregate_test_metrics():
+        log('aggregating test metrics')
+
+    for epoch_num in range(NUM_EPOCHS):
+        for batch_num in range(BATCH_SIZE):
+            # Training
+            offset = int(random.gauss(0, SAMPLE_NUM * SAMPLE_NUM_VARIANCE))
+            offset = max(offset, -SAMPLE_NUM * SAMPLE_NUM_CLIP)
+            offset = min(offset, SAMPLE_NUM * SAMPLE_NUM_CLIP)
+            sample_num_train = SAMPLE_NUM + offset
+            xforms_np, rotations_np = get_xforms(BATCH_SIZE)
+            reset_metrics()
+            train()
+            update_metrics()
+            if batch_idx_train % 10 == 0:
+                aggregate_metrics()
+                step += 1
+                log(' [Train]-Iter: {:06d}  Loss: {:.4f}  T-1 Acc: {:.4f}  T-1 mAcc: {:.4f}'
+                            .format(step, loss, t_1_acc, t_1_per_class_acc))
+
+            # Testing
+            if ((batch_num % STEP_VAL == 0 and batch_num != 0 ) or (batch_num == batch_num - 1)):
+                next_test_ds = get_next(test_ds)
+                reset_metrics()
+                test()
+
+    
 main()
 
 
